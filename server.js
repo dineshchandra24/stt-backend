@@ -220,4 +220,7 @@ app.get("/", (req, res) => res.send("✅ Backend running"));
 
 // --- start
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Server listening on http://localhost:${PORT}`));
+
+app.listen(PORT, () => {
+  console.log(`✅ Server listening on port ${PORT}`);
+});
