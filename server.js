@@ -1,226 +1,328 @@
-// backend/server.js
-import express from "express";
-import dotenv from "dotenv";
-import cors from "cors";
-import multer from "multer";
-import mongoose from "mongoose";
-import axios from "axios";
-import PDFDocument from "pdfkit";
-
-dotenv.config();
+// server.js
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const axios = require('axios');
+const PDFDocument = require('pdfkit');
+const fs = require('fs');
+require('dotenv').config();
 
 const app = express();
+
+// Middleware
 app.use(cors());
 app.use(express.json());
 
-// --- Debug: confirm env loaded
-console.log("DEEPGRAM_API_KEY loaded:", !!process.env.DEEPGRAM_API_KEY);
-console.log("MONGO_URI loaded:", !!process.env.MONGO_URI);
+// MongoDB Connection
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/echoscribe', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+.then(() => console.log('✅ MongoDB Connected'))
+.catch(err => console.error('❌ MongoDB Connection Error:', err));
 
-// --- MongoDB connection
-mongoose
-  .connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch((err) => {
-    console.error("❌ MongoDB connection error:", err.message || err);
-  });
-
-// --- Mongoose model
-const historySchema = new mongoose.Schema({
-  text: String,
-  createdAt: { type: Date, default: Date.now },
+// User Schema
+const userSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
 });
-const History = mongoose.model("History", historySchema);
 
-// --- Multer memory storage so we can send buffer directly
+const User = mongoose.model('User', userSchema);
+
+// Transcription Schema
+const transcriptionSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  text: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const Transcription = mongoose.model('Transcription', transcriptionSchema);
+
+// JWT Secret
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
+
+// Multer Configuration for Audio Upload
 const upload = multer({ storage: multer.memoryStorage() });
 
-// --- Helper: determine a good mimetype for Deepgram
-function chooseMimeType(file) {
-  if (file?.mimetype && file.mimetype !== "application/octet-stream") {
-    return file.mimetype;
-  }
-  const name = file?.originalname || "";
-  const ext = name.split(".").pop()?.toLowerCase();
-  const map = {
-    wav: "audio/wav",
-    mp3: "audio/mpeg",
-    m4a: "audio/mp4",
-    webm: "audio/webm",
-    ogg: "audio/ogg",
-  };
-  return map[ext] || "audio/webm;codecs=opus";
-}
+// Authentication Middleware
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
 
-// --- Helper: call Deepgram REST listen endpoint
-async function transcribeWithDeepgram(buffer, mimetype) {
-  if (!process.env.DEEPGRAM_API_KEY) {
-    throw new Error("No Deepgram API key in environment");
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
   }
-  const url = "https://api.deepgram.com/v1/listen?punctuate=true";
 
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Invalid or expired token' });
+    }
+    req.user = user;
+    next();
+  });
+};
+
+// ==================== AUTH ROUTES ====================
+
+// Sign Up
+app.post('/api/auth/signup', async (req, res) => {
   try {
-    const resp = await axios.post(url, buffer, {
-      headers: {
-        Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`,
-        "Content-Type": mimetype,
-      },
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity,
-      timeout: 120000,
-    });
+    const { name, email, password } = req.body;
 
-    const data = resp.data;
-    const alt =
-      data?.results?.channels?.[0]?.alternatives?.[0] ||
-      data?.results?.[0]?.alternatives?.[0] ||
-      null;
-    const transcript = alt?.transcript ?? null;
-
-    return { transcript, raw: data };
-  } catch (err) {
-    const e = new Error("Deepgram request failed");
-    e.details = {
-      status: err?.response?.status,
-      remoteData: err?.response?.data,
-      message: err?.message,
-    };
-    throw e;
-  }
-}
-
-// --- Transcription endpoint
-app.post(["/transcribe", "/api/transcribe"], upload.single("audio"), async (req, res) => {
-  try {
-    if (!req.file || !req.file.buffer) {
-      return res.status(400).json({ error: "No audio file uploaded (field name must be 'audio')" });
+    // Validation
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: 'All fields are required' });
     }
 
-    console.log("Received file:", {
-      originalname: req.file.originalname,
-      size: req.file.size,
-      mimetype: req.file.mimetype,
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    // Check if user exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ error: 'Email already registered' });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Create user
+    const user = new User({
+      name,
+      email,
+      password: hashedPassword
     });
 
-    const mimetype = chooseMimeType(req.file);
-    const { transcript, raw } = await transcribeWithDeepgram(req.file.buffer, mimetype);
+    await user.save();
 
-    console.log("Deepgram response (summary):", {
-      transcriptExists: !!transcript,
-      keys: raw ? Object.keys(raw) : null,
+    // Generate JWT
+    const token = jwt.sign(
+      { id: user._id, email: user.email },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    res.status(201).json({
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email
+      }
     });
+  } catch (error) {
+    console.error('Signup error:', error);
+    res.status(500).json({ error: 'Server error during signup' });
+  }
+});
+
+// Login
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    // Validation
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password required' });
+    }
+
+    // Find user
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Check password
+    const isValidPassword = await bcrypt.compare(password, user.password);
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Generate JWT
+    const token = jwt.sign(
+      { id: user._id, email: user.email },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    res.json({
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email
+      }
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Server error during login' });
+  }
+});
+
+// ==================== TRANSCRIPTION ROUTES ====================
+
+// Transcribe Audio with Deepgram
+app.post('/api/transcribe', authenticateToken, upload.single('audio'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No audio file provided' });
+    }
+
+    const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
+    if (!DEEPGRAM_API_KEY) {
+      return res.status(500).json({ error: 'Deepgram API key not configured' });
+    }
+
+    // Send to Deepgram
+    const response = await axios.post(
+      'https://api.deepgram.com/v1/listen',
+      req.file.buffer,
+      {
+        headers: {
+          'Authorization': `Token ${DEEPGRAM_API_KEY}`,
+          'Content-Type': req.file.mimetype
+        },
+        params: {
+          model: 'nova-2',
+          smart_format: true
+        }
+      }
+    );
+
+    const transcript = response.data.results.channels[0].alternatives[0].transcript;
 
     if (!transcript) {
-      return res.status(500).json({
-        error: "No transcript returned by Deepgram",
-        deepgramRaw: raw,
-      });
+      return res.status(400).json({ error: 'No speech detected in audio' });
     }
 
-    return res.json({ transcript });
-  } catch (err) {
-    console.error("Transcription error:", err.message || err);
-    if (err.details) {
-      console.error("Deepgram error details:", JSON.stringify(err.details, null, 2));
-      return res.status(500).json({
-        error: "Deepgram transcription failed",
-        details: err.details,
-      });
-    }
-    return res.status(500).json({ error: "Server transcription error", message: err.message });
+    res.json({ transcript });
+  } catch (error) {
+    console.error('Transcription error:', error.response?.data || error.message);
+    res.status(500).json({ 
+      error: 'Transcription failed',
+      details: error.response?.data?.error || error.message
+    });
   }
 });
 
-// --- History endpoints
-app.post("/api/history", async (req, res) => {
+// Get User's Transcription History
+app.get('/api/history', authenticateToken, async (req, res) => {
+  try {
+    const transcriptions = await Transcription.find({ userId: req.user.id })
+      .sort({ createdAt: -1 });
+    res.json(transcriptions);
+  } catch (error) {
+    console.error('Fetch history error:', error);
+    res.status(500).json({ error: 'Error fetching history' });
+  }
+});
+
+// Save Transcription
+app.post('/api/history', authenticateToken, async (req, res) => {
   try {
     const { text } = req.body;
-    if (!text || !text.trim()) return res.status(400).json({ error: "Empty text" });
-    const item = new History({ text: text.trim() });
-    await item.save();
-    res.json(item);
-  } catch (err) {
-    console.error("Save history error:", err);
-    res.status(500).json({ error: "Failed to save history" });
-  }
-});
 
-app.get("/api/history", async (req, res) => {
-  try {
-    const items = await History.find().sort({ createdAt: -1 });
-    res.json(items);
-  } catch (err) {
-    console.error("Fetch history error:", err);
-    res.status(500).json({ error: "Failed to fetch history" });
-  }
-});
-
-app.delete("/api/history", async (req, res) => {
-  try {
-    await History.deleteMany({});
-    res.json({ success: true });
-  } catch (err) {
-    console.error("Clear history error:", err);
-    res.status(500).json({ error: "Failed to clear history" });
-  }
-});
-
-// ✅ NEW: Delete individual history item
-app.delete("/api/history/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    await History.findByIdAndDelete(id);
-    res.json({ success: true });
-  } catch (err) {
-    console.error("Delete history error:", err);
-    res.status(500).json({ error: "Failed to delete history item" });
-  }
-});
-
-// --- Download history
-app.get("/api/history/download", async (req, res) => {
-  try {
-    const format = (req.query.format || req.query.type || "pdf").toLowerCase();
-    const items = await History.find().sort({ createdAt: -1 });
-    if (items.length === 0) return res.status(404).send("No history to download");
-
-    if (format === "txt" || format === "text") {
-      const content = items
-        .map((it, i) => `${i + 1}. [${new Date(it.createdAt).toLocaleString()}]\n${it.text}`)
-        .join("\n\n");
-      res.setHeader("Content-Disposition", "attachment; filename=history.txt");
-      res.setHeader("Content-Type", "text/plain");
-      return res.send(content);
+    if (!text || !text.trim()) {
+      return res.status(400).json({ error: 'Text is required' });
     }
 
-    res.setHeader("Content-Disposition", "attachment; filename=history.pdf");
-    res.setHeader("Content-Type", "application/pdf");
-
-    const doc = new PDFDocument({ margin: 50 });
-    doc.pipe(res);
-
-    doc.fontSize(20).text("Transcription History", { align: "center" });
-    doc.moveDown();
-
-    items.forEach((it, idx) => {
-      doc.fontSize(12).fillColor("black").text(`${idx + 1}. ${it.text}`, { paragraphGap: 4 });
-      doc.fontSize(10).fillColor("gray").text(new Date(it.createdAt).toLocaleString(), { paragraphGap: 8 });
-      doc.moveDown();
+    const transcription = new Transcription({
+      userId: req.user.id,
+      text: text.trim()
     });
 
-    doc.end();
-  } catch (err) {
-    console.error("Download error:", err);
-    res.status(500).json({ error: "Failed to generate download" });
+    await transcription.save();
+    res.status(201).json(transcription);
+  } catch (error) {
+    console.error('Save transcription error:', error);
+    res.status(500).json({ error: 'Error saving transcription' });
   }
 });
 
-// --- simple health
-app.get("/", (req, res) => res.send("✅ Backend running"));
+// Delete Single Transcription
+app.delete('/api/history/:id', authenticateToken, async (req, res) => {
+  try {
+    const transcription = await Transcription.findOne({
+      _id: req.params.id,
+      userId: req.user.id
+    });
 
-// --- start
+    if (!transcription) {
+      return res.status(404).json({ error: 'Transcription not found' });
+    }
+
+    await transcription.deleteOne();
+    res.json({ message: 'Transcription deleted' });
+  } catch (error) {
+    console.error('Delete transcription error:', error);
+    res.status(500).json({ error: 'Error deleting transcription' });
+  }
+});
+
+// Delete All User Transcriptions
+app.delete('/api/history', authenticateToken, async (req, res) => {
+  try {
+    await Transcription.deleteMany({ userId: req.user.id });
+    res.json({ message: 'All transcriptions deleted' });
+  } catch (error) {
+    console.error('Delete all error:', error);
+    res.status(500).json({ error: 'Error deleting transcriptions' });
+  }
+});
+
+// Download History as PDF or TXT
+app.get('/api/history/download', authenticateToken, async (req, res) => {
+  try {
+    const format = req.query.format || 'pdf';
+    const transcriptions = await Transcription.find({ userId: req.user.id })
+      .sort({ createdAt: -1 });
+
+    if (format === 'pdf') {
+      const doc = new PDFDocument();
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename=transcriptions.pdf');
+      doc.pipe(res);
+
+      doc.fontSize(20).text('EchoScribe Transcriptions', { align: 'center' });
+      doc.moveDown();
+
+      transcriptions.forEach((item, index) => {
+        doc.fontSize(12).text(`${index + 1}. ${new Date(item.createdAt).toLocaleString()}`);
+        doc.fontSize(10).text(item.text);
+        doc.moveDown();
+      });
+
+      doc.end();
+    } else if (format === 'txt') {
+      res.setHeader('Content-Type', 'text/plain');
+      res.setHeader('Content-Disposition', 'attachment; filename=transcriptions.txt');
+
+      let content = 'EchoScribe Transcriptions\n\n';
+      transcriptions.forEach((item, index) => {
+        content += `${index + 1}. ${new Date(item.createdAt).toLocaleString()}\n`;
+        content += `${item.text}\n\n`;
+      });
+
+      res.send(content);
+    } else {
+      res.status(400).json({ error: 'Invalid format. Use pdf or txt' });
+    }
+  } catch (error) {
+    console.error('Download error:', error);
+    res.status(500).json({ error: 'Error generating download' });
+  }
+});
+
+// ==================== SERVER START ====================
+
 const PORT = process.env.PORT || 5000;
-
 app.listen(PORT, () => {
-  console.log(`✅ Server listening on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📡 API available at http://localhost:${PORT}`);
 });
