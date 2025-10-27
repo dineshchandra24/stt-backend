@@ -1,23 +1,24 @@
 {
-  "name": "backend",
+  "name": "echoscribe-backend",
   "version": "1.0.0",
+  "description": "EchoScribe Backend API with Authentication",
   "main": "server.js",
-  "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
   "dependencies": {
-    "@deepgram/sdk": "^3.0.0",
-    "axios": "^1.12.2",
+    "express": "^4.18.2",
+    "mongoose": "^8.0.3",
     "cors": "^2.8.5",
-    "dotenv": "^16.6.1",
-    "express": "^4.21.2",
-    "mongoose": "^8.18.1",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
-    "pdfkit": "^0.15.2"
+    "axios": "^1.6.2",
+    "pdfkit": "^0.14.0",
+    "dotenv": "^16.3.1"
   },
   "devDependencies": {
-    "nodemon": "^3.1.10"
+    "nodemon": "^3.0.2"
   }
 }
