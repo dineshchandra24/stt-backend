@@ -8,7 +8,7 @@ const multer = require('multer');
 const axios = require('axios');
 const PDFDocument = require('pdfkit');
 const fs = require('fs');
-const { OAuth2Client } = require('google-auth-library'); // ✅ added for Google OAuth
+const { OAuth2Client } = require('google-auth-library'); // ✅ Added Google Auth Library
 require('dotenv').config();
 
 const app = express();
@@ -29,8 +29,7 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/echoscrib
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true },
-  password: { type: String },
-  phone: { type: String, unique: false },
+  password: { type: String, required: true },
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -55,10 +54,15 @@ const upload = multer({ storage: multer.memoryStorage() });
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'Access token required' });
+
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
+  }
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ error: 'Invalid or expired token' });
+    if (err) {
+      return res.status(403).json({ error: 'Invalid or expired token' });
+    }
     req.user = user;
     next();
   });
@@ -70,24 +74,43 @@ const authenticateToken = (req, res, next) => {
 app.post('/api/auth/signup', async (req, res) => {
   try {
     const { name, email, password } = req.body;
-    if (!name || !email || !password)
+
+    if (!name || !email || !password) {
       return res.status(400).json({ error: 'All fields are required' });
-    if (password.length < 6)
+    }
+
+    if (password.length < 6) {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
 
     const existingUser = await User.findOne({ email });
-    if (existingUser)
+    if (existingUser) {
       return res.status(400).json({ error: 'Email already registered' });
+    }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const user = new User({ name, email, password: hashedPassword });
+
+    const user = new User({
+      name,
+      email,
+      password: hashedPassword
+    });
+
     await user.save();
 
-    const token = jwt.sign({ id: user._id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign(
+      { id: user._id, email: user.email },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
 
     res.status(201).json({
       token,
-      user: { id: user._id, name: user.name, email: user.email }
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email
+      }
     });
   } catch (error) {
     console.error('Signup error:', error);
@@ -99,18 +122,35 @@ app.post('/api/auth/signup', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password)
+
+    if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
+    }
 
     const user = await User.findOne({ email });
-    if (!user) return res.status(401).json({ error: 'Invalid email or password' });
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
 
     const isValidPassword = await bcrypt.compare(password, user.password);
-    if (!isValidPassword)
+    if (!isValidPassword) {
       return res.status(401).json({ error: 'Invalid email or password' });
+    }
 
-    const token = jwt.sign({ id: user._id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: { id: user._id, name: user.name, email: user.email } });
+    const token = jwt.sign(
+      { id: user._id, email: user.email },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    res.json({
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email
+      }
+    });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ error: 'Server error during login' });
@@ -119,20 +159,41 @@ app.post('/api/auth/login', async (req, res) => {
 
 // ==================== GOOGLE OAUTH ROUTES ====================
 
-// GET /api/auth/google
 app.get('/api/auth/google', (req, res) => {
-  res.json({ message: 'Google OAuth endpoint ready' });
+  const redirectUri = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/auth/google/callback`;
+  const googleAuthUrl =
+    `https://accounts.google.com/o/oauth2/v2/auth?` +
+    `client_id=${process.env.GOOGLE_CLIENT_ID}&` +
+    `redirect_uri=${redirectUri}&` +
+    `response_type=code&` +
+    `scope=profile email&` +
+    `access_type=offline&` +
+    `prompt=consent`;
+
+  res.redirect(googleAuthUrl);
 });
 
-// POST /api/auth/google/callback
-app.post('/api/auth/google/callback', async (req, res) => {
+app.get('/api/auth/google/callback', async (req, res) => {
   try {
-    const { token } = req.body;
-    if (!token) return res.status(400).json({ error: 'Google token required' });
+    const { code } = req.query;
+    if (!code) {
+      return res.send('<script>window.close();</script>');
+    }
+
+    const redirectUri = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/auth/google/callback`;
+    const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', {
+      code,
+      client_id: process.env.GOOGLE_CLIENT_ID,
+      client_secret: process.env.GOOGLE_CLIENT_SECRET,
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code'
+    });
+
+    const { id_token } = tokenResponse.data;
 
     const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
     const ticket = await client.verifyIdToken({
-      idToken: token,
+      idToken: id_token,
       audience: process.env.GOOGLE_CLIENT_ID,
     });
     const payload = ticket.getPayload();
@@ -142,7 +203,7 @@ app.post('/api/auth/google/callback', async (req, res) => {
       user = new User({
         name: payload.name,
         email: payload.email,
-        password: '', // not needed for Google login
+        password: '', // No password for Google OAuth users
       });
       await user.save();
     }
@@ -153,77 +214,19 @@ app.post('/api/auth/google/callback', async (req, res) => {
       { expiresIn: '7d' }
     );
 
-    res.json({
-      token: jwtToken,
-      user: { id: user._id, name: user.name, email: user.email }
-    });
+    const userData = { id: user._id, name: user.name, email: user.email };
+    res.send(`
+      <script>
+        window.opener.postMessage(
+          { token: '${jwtToken}', user: ${JSON.stringify(userData)} },
+          '${process.env.FRONTEND_URL || 'http://localhost:3000'}'
+        );
+        window.close();
+      </script>
+    `);
   } catch (error) {
-    console.error('Google OAuth error:', error);
-    res.status(500).json({ error: 'Google authentication failed' });
-  }
-});
-
-// ==================== PHONE AUTH ROUTES ====================
-
-// Temporary in-memory store for OTPs
-const otpStore = new Map();
-
-// POST /api/auth/send-otp
-app.post('/api/auth/send-otp', async (req, res) => {
-  try {
-    const { phone } = req.body;
-    if (!phone) return res.status(400).json({ error: 'Phone number required' });
-
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    otpStore.set(phone, otp);
-
-    // Simulate sending OTP (integrate Twilio or similar in production)
-    console.log(`📲 OTP for ${phone}: ${otp}`);
-
-    res.json({ success: true, message: 'OTP sent successfully' });
-  } catch (error) {
-    console.error('Send OTP error:', error);
-    res.status(500).json({ error: 'Failed to send OTP' });
-  }
-});
-
-// POST /api/auth/verify-otp
-app.post('/api/auth/verify-otp', async (req, res) => {
-  try {
-    const { phone, otp } = req.body;
-    if (!phone || !otp)
-      return res.status(400).json({ error: 'Phone and OTP required' });
-
-    const storedOtp = otpStore.get(phone);
-    if (storedOtp !== otp)
-      return res.status(401).json({ error: 'Invalid or expired OTP' });
-
-    otpStore.delete(phone);
-
-    let user = await User.findOne({ phone });
-    if (!user) {
-      user = new User({
-        name: 'User ' + phone.slice(-4),
-        email: `${phone}@echoscribe.app`,
-        password: '',
-        phone
-      });
-      await user.save();
-    }
-
-    const token = jwt.sign(
-      { id: user._id, phone: user.phone },
-      JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-
-    res.json({
-      token,
-      user: { id: user._id, name: user.name, phone: user.phone }
-    });
-  } catch (error) {
-    console.error('Verify OTP error:', error);
-    res.status(500).json({ error: 'OTP verification failed' });
+    console.error('Google OAuth callback error:', error);
+    res.send('<script>alert("Authentication failed"); window.close();</script>');
   }
 });
 
@@ -231,11 +234,14 @@ app.post('/api/auth/verify-otp', async (req, res) => {
 
 app.post('/api/transcribe', authenticateToken, upload.single('audio'), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'No audio file provided' });
+    if (!req.file) {
+      return res.status(400).json({ error: 'No audio file provided' });
+    }
 
     const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
-    if (!DEEPGRAM_API_KEY)
+    if (!DEEPGRAM_API_KEY) {
       return res.status(500).json({ error: 'Deepgram API key not configured' });
+    }
 
     const response = await axios.post(
       'https://api.deepgram.com/v1/listen',
@@ -245,19 +251,30 @@ app.post('/api/transcribe', authenticateToken, upload.single('audio'), async (re
           'Authorization': `Token ${DEEPGRAM_API_KEY}`,
           'Content-Type': req.file.mimetype
         },
-        params: { model: 'nova-2', smart_format: true }
+        params: {
+          model: 'nova-2',
+          smart_format: true
+        }
       }
     );
 
     const transcript = response.data.results.channels[0].alternatives[0].transcript;
-    if (!transcript) return res.status(400).json({ error: 'No speech detected in audio' });
+
+    if (!transcript) {
+      return res.status(400).json({ error: 'No speech detected in audio' });
+    }
 
     res.json({ transcript });
   } catch (error) {
     console.error('Transcription error:', error.response?.data || error.message);
-    res.status(500).json({ error: 'Transcription failed', details: error.response?.data?.error || error.message });
+    res.status(500).json({
+      error: 'Transcription failed',
+      details: error.response?.data?.error || error.message
+    });
   }
 });
+
+// ==================== HISTORY & DOWNLOAD ROUTES ====================
 
 app.get('/api/history', authenticateToken, async (req, res) => {
   try {
@@ -272,10 +289,15 @@ app.get('/api/history', authenticateToken, async (req, res) => {
 app.post('/api/history', authenticateToken, async (req, res) => {
   try {
     const { text } = req.body;
-    if (!text || !text.trim())
+    if (!text || !text.trim()) {
       return res.status(400).json({ error: 'Text is required' });
+    }
 
-    const transcription = new Transcription({ userId: req.user.id, text: text.trim() });
+    const transcription = new Transcription({
+      userId: req.user.id,
+      text: text.trim()
+    });
+
     await transcription.save();
     res.status(201).json(transcription);
   } catch (error) {
@@ -286,8 +308,14 @@ app.post('/api/history', authenticateToken, async (req, res) => {
 
 app.delete('/api/history/:id', authenticateToken, async (req, res) => {
   try {
-    const transcription = await Transcription.findOne({ _id: req.params.id, userId: req.user.id });
-    if (!transcription) return res.status(404).json({ error: 'Transcription not found' });
+    const transcription = await Transcription.findOne({
+      _id: req.params.id,
+      userId: req.user.id
+    });
+
+    if (!transcription) {
+      return res.status(404).json({ error: 'Transcription not found' });
+    }
 
     await transcription.deleteOne();
     res.json({ message: 'Transcription deleted' });
@@ -331,11 +359,13 @@ app.get('/api/history/download', authenticateToken, async (req, res) => {
     } else if (format === 'txt') {
       res.setHeader('Content-Type', 'text/plain');
       res.setHeader('Content-Disposition', 'attachment; filename=transcriptions.txt');
+
       let content = 'EchoScribe Transcriptions\n\n';
       transcriptions.forEach((item, index) => {
         content += `${index + 1}. ${new Date(item.createdAt).toLocaleString()}\n`;
         content += `${item.text}\n\n`;
       });
+
       res.send(content);
     } else {
       res.status(400).json({ error: 'Invalid format. Use pdf or txt' });
