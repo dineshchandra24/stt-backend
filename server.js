@@ -393,6 +393,100 @@ app.post('/api/transcribe', authenticateToken, upload.single('audio'), async (re
   }
 });
 
+// ==================== TRANSLATION ROUTE ====================
+
+app.post('/api/translate', authenticateToken, async (req, res) => {
+  try {
+    const { text, targetLanguage } = req.body;
+
+    // Validate input
+    if (!text || !text.trim()) {
+      return res.status(400).json({ error: 'Text is required for translation' });
+    }
+
+    if (!targetLanguage) {
+      return res.status(400).json({ error: 'Target language is required' });
+    }
+
+    // Validate target language (Indian languages supported)
+    const supportedLanguages = ['hi', 'mr', 'bn', 'gu', 'ta', 'te', 'kn', 'ml', 'pa', 'ur'];
+    if (!supportedLanguages.includes(targetLanguage)) {
+      return res.status(400).json({ 
+        error: 'Unsupported target language',
+        supportedLanguages: supportedLanguages 
+      });
+    }
+
+    // Get MyMemory API key from environment or use default
+    const MYMEMORY_API_KEY = process.env.MYMEMORY_API_KEY || '2f1d0cbe7843b300e9ce';
+    
+    // Build API URL with your API key
+    const apiUrl = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|${targetLanguage}&de=${MYMEMORY_API_KEY}`;
+    
+    // Make request to MyMemory API
+    const response = await axios.get(apiUrl);
+    
+    // Check response status
+    if (response.data.responseStatus === 200 && response.data.responseData) {
+      const translatedText = response.data.responseData.translatedText;
+      
+      // Log successful translation
+      console.log(`✅ Translation completed: en -> ${targetLanguage} (${text.length} chars)`);
+      
+      res.json({
+        translatedText: translatedText,
+        sourceLanguage: 'en',
+        targetLanguage: targetLanguage,
+        matches: response.data.matches?.length || 0, // Translation quality indicator
+        originalText: text
+      });
+    } else if (response.data.responseStatus === 403) {
+      console.error('❌ MyMemory API quota exceeded');
+      res.status(403).json({ 
+        error: 'Translation API quota exceeded. Please try again later.',
+        details: 'Daily limit reached for your API key'
+      });
+    } else if (response.data.responseStatus === 429) {
+      console.error('❌ MyMemory API rate limit hit');
+      res.status(429).json({ 
+        error: 'Too many translation requests. Please wait a moment.',
+        details: 'Rate limit exceeded'
+      });
+    } else {
+      console.error('❌ MyMemory API error:', response.data);
+      res.status(500).json({ 
+        error: 'Translation service returned an error',
+        details: response.data.responseDetails || 'Unknown error'
+      });
+    }
+  } catch (error) {
+    console.error('Translation error:', error.response?.data || error.message);
+    
+    // Handle specific error cases
+    if (error.response?.status === 403) {
+      res.status(403).json({ 
+        error: 'Translation API quota exceeded',
+        details: 'Please check your API key or wait for quota reset'
+      });
+    } else if (error.response?.status === 429) {
+      res.status(429).json({ 
+        error: 'Too many translation requests. Please wait a moment.',
+        details: 'Rate limit exceeded'
+      });
+    } else if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+      res.status(504).json({ 
+        error: 'Translation request timed out',
+        details: 'Please try again with shorter text'
+      });
+    } else {
+      res.status(500).json({
+        error: 'Translation failed',
+        details: error.message
+      });
+    }
+  }
+});
+
 // ==================== HISTORY & DOWNLOAD ROUTES ====================
 
 app.get('/api/history', authenticateToken, async (req, res) => {
@@ -501,4 +595,5 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📡 API available at http://localhost:${PORT}`);
+  console.log(`🌐 Translation API: MyMemory (API Key configured)`);
 });
