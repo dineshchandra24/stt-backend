@@ -8,7 +8,7 @@ const multer = require('multer');
 const axios = require('axios');
 const PDFDocument = require('pdfkit');
 const fs = require('fs');
-const { OAuth2Client } = require('google-auth-library'); // ✅ Added Google Auth Library
+const { OAuth2Client } = require('google-auth-library');
 require('dotenv').config();
 
 const app = express();
@@ -25,11 +25,13 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/echoscrib
 .then(() => console.log('✅ MongoDB Connected'))
 .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
-// User Schema
+// User Schema - UPDATED to include hasPassword field
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true },
   password: { type: String, required: false },
+  hasPassword: { type: Boolean, default: true }, // ✅ NEW: Track if user has set a password
+  profilePhoto: { type: String, required: false }, // ✅ NEW: Store Google profile photo
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -93,7 +95,8 @@ app.post('/api/auth/signup', async (req, res) => {
     const user = new User({
       name,
       email,
-      password: hashedPassword
+      password: hashedPassword,
+      hasPassword: true // ✅ User signing up with email/password has a password
     });
 
     await user.save();
@@ -109,7 +112,9 @@ app.post('/api/auth/signup', async (req, res) => {
       user: {
         id: user._id,
         name: user.name,
-        email: user.email
+        email: user.email,
+        hasPassword: user.hasPassword,
+        profilePhoto: user.profilePhoto
       }
     });
   } catch (error) {
@@ -132,6 +137,11 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
+    // Check if user has a password set
+    if (!user.hasPassword || !user.password) {
+      return res.status(401).json({ error: 'Please sign in with Google or set a password first' });
+    }
+
     const isValidPassword = await bcrypt.compare(password, user.password);
     if (!isValidPassword) {
       return res.status(401).json({ error: 'Invalid email or password' });
@@ -148,12 +158,110 @@ app.post('/api/auth/login', async (req, res) => {
       user: {
         id: user._id,
         name: user.name,
-        email: user.email
+        email: user.email,
+        hasPassword: user.hasPassword,
+        profilePhoto: user.profilePhoto
       }
     });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ error: 'Server error during login' });
+  }
+});
+
+// ==================== PASSWORD MANAGEMENT ROUTES ====================
+
+// ✅ NEW: Set Password (for Google OAuth users)
+app.put('/api/auth/set-password', authenticateToken, async (req, res) => {
+  try {
+    const { newPassword } = req.body;
+
+    if (!newPassword) {
+      return res.status(400).json({ error: 'New password is required' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Check if user already has a password
+    if (user.hasPassword && user.password) {
+      return res.status(400).json({ error: 'Password already set. Use change password instead.' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    user.password = hashedPassword;
+    user.hasPassword = true;
+    await user.save();
+
+    res.json({
+      message: 'Password set successfully',
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        hasPassword: user.hasPassword,
+        profilePhoto: user.profilePhoto
+      }
+    });
+  } catch (error) {
+    console.error('Set password error:', error);
+    res.status(500).json({ error: 'Server error while setting password' });
+  }
+});
+
+// ✅ UPDATED: Change Password (for users with existing passwords)
+app.put('/api/auth/change-password', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current and new password are required' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Check if user has a password set
+    if (!user.hasPassword || !user.password) {
+      return res.status(400).json({ error: 'No password set. Use set password instead.' });
+    }
+
+    // Verify current password
+    const isValidPassword = await bcrypt.compare(currentPassword, user.password);
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // Hash and save new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    user.password = hashedPassword;
+    await user.save();
+
+    res.json({
+      message: 'Password changed successfully',
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        hasPassword: user.hasPassword,
+        profilePhoto: user.profilePhoto
+      }
+    });
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({ error: 'Server error while changing password' });
   }
 });
 
@@ -200,10 +308,13 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
     let user = await User.findOne({ email: payload.email });
     if (!user) {
+      // ✅ NEW: Create user with hasPassword = false for Google OAuth
       user = new User({
         name: payload.name,
         email: payload.email,
-        password: '', // No password for Google OAuth users
+        password: '', // No password for Google OAuth users initially
+        hasPassword: false, // ✅ Mark that user doesn't have a password yet
+        profilePhoto: payload.picture || '' // ✅ Store Google profile photo
       });
       await user.save();
     }
@@ -214,7 +325,15 @@ app.get('/api/auth/google/callback', async (req, res) => {
       { expiresIn: '7d' }
     );
 
-    const userData = { id: user._id, name: user.name, email: user.email };
+    // ✅ UPDATED: Include hasPassword and profilePhoto in user data
+    const userData = {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      hasPassword: user.hasPassword,
+      profilePhoto: user.profilePhoto
+    };
+
     res.send(`
       <script>
         window.opener.postMessage(
