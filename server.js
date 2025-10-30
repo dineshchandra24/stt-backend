@@ -53,19 +53,25 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-pro
 const upload = multer({ storage: multer.memoryStorage() });
 
 // ✅ FIXED: Helper function to format date and time in DD/MM/YYYY and 12-hour AM/PM format
+// Explicitly converts to IST (Indian Standard Time - Asia/Kolkata)
 const formatDateTime = (date) => {
+  // Create date object
   const d = new Date(date);
   
+  // Convert to IST timezone (Asia/Kolkata)
+  const istDateString = d.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+  const istDate = new Date(istDateString);
+  
   // Format date as DD/MM/YYYY
-  const day = d.getDate().toString().padStart(2, '0');
-  const month = (d.getMonth() + 1).toString().padStart(2, '0');
-  const year = d.getFullYear();
+  const day = istDate.getDate().toString().padStart(2, '0');
+  const month = (istDate.getMonth() + 1).toString().padStart(2, '0');
+  const year = istDate.getFullYear();
   const formattedDate = `${day}/${month}/${year}`;
   
   // Format time as HH:MM:SS AM/PM
-  let hours = d.getHours();
-  const minutes = d.getMinutes().toString().padStart(2, '0');
-  const seconds = d.getSeconds().toString().padStart(2, '0');
+  let hours = istDate.getHours();
+  const minutes = istDate.getMinutes().toString().padStart(2, '0');
+  const seconds = istDate.getSeconds().toString().padStart(2, '0');
   const ampm = hours >= 12 ? 'PM' : 'AM';
   hours = hours % 12;
   hours = hours ? hours : 12; // Convert 0 to 12
@@ -555,7 +561,7 @@ app.delete('/api/history', authenticateToken, async (req, res) => {
   }
 });
 
-// ✅ FIXED: Download route with DD/MM/YYYY date format and 12-hour AM/PM time format
+// ✅ FIXED: Download route with DD/MM/YYYY date format and 12-hour AM/PM time format in IST timezone
 app.get('/api/history/download', authenticateToken, async (req, res) => {
   try {
     const format = req.query.format || 'pdf';
@@ -640,4 +646,5 @@ app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📡 API available at http://localhost:${PORT}`);
   console.log(`🌐 Translation API: MyMemory (API Key configured)`);
+  console.log(`⏰ Timezone: IST (Asia/Kolkata) - All timestamps in Indian Standard Time`);
 });
