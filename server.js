@@ -25,13 +25,13 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/echoscrib
 .then(() => console.log('✅ MongoDB Connected'))
 .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
-// User Schema - UPDATED to include hasPassword field
+// User Schema
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true },
   password: { type: String, required: false },
-  hasPassword: { type: Boolean, default: true }, // ✅ NEW: Track if user has set a password
-  profilePhoto: { type: String, required: false }, // ✅ NEW: Store Google profile photo
+  hasPassword: { type: Boolean, default: true },
+  profilePhoto: { type: String, required: false },
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -52,26 +52,24 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-pro
 // Multer Configuration for Audio Upload
 const upload = multer({ storage: multer.memoryStorage() });
 
-// ✅ NEW: Helper function to format date and time properly
+// ✅ FIXED: Helper function to format date and time in DD/MM/YYYY and 12-hour AM/PM format
 const formatDateTime = (date) => {
   const d = new Date(date);
   
-  // Format date
-  const dateOptions = { 
-    year: 'numeric', 
-    month: 'long', 
-    day: 'numeric' 
-  };
-  const formattedDate = d.toLocaleDateString('en-US', dateOptions);
+  // Format date as DD/MM/YYYY
+  const day = d.getDate().toString().padStart(2, '0');
+  const month = (d.getMonth() + 1).toString().padStart(2, '0');
+  const year = d.getFullYear();
+  const formattedDate = `${day}/${month}/${year}`;
   
-  // Format time with AM/PM
-  const timeOptions = { 
-    hour: '2-digit', 
-    minute: '2-digit', 
-    second: '2-digit',
-    hour12: true 
-  };
-  const formattedTime = d.toLocaleTimeString('en-US', timeOptions);
+  // Format time as HH:MM:SS AM/PM
+  let hours = d.getHours();
+  const minutes = d.getMinutes().toString().padStart(2, '0');
+  const seconds = d.getSeconds().toString().padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12;
+  hours = hours ? hours : 12; // Convert 0 to 12
+  const formattedTime = `${hours.toString().padStart(2, '0')}:${minutes}:${seconds} ${ampm}`;
   
   return {
     date: formattedDate,
@@ -124,7 +122,7 @@ app.post('/api/auth/signup', async (req, res) => {
       name,
       email,
       password: hashedPassword,
-      hasPassword: true // ✅ User signing up with email/password has a password
+      hasPassword: true
     });
 
     await user.save();
@@ -165,7 +163,6 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Check if user has a password set
     if (!user.hasPassword || !user.password) {
       return res.status(401).json({ error: 'Please sign in with Google or set a password first' });
     }
@@ -199,7 +196,6 @@ app.post('/api/auth/login', async (req, res) => {
 
 // ==================== PASSWORD MANAGEMENT ROUTES ====================
 
-// ✅ NEW: Set Password (for Google OAuth users)
 app.put('/api/auth/set-password', authenticateToken, async (req, res) => {
   try {
     const { newPassword } = req.body;
@@ -217,7 +213,6 @@ app.put('/api/auth/set-password', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Check if user already has a password
     if (user.hasPassword && user.password) {
       return res.status(400).json({ error: 'Password already set. Use change password instead.' });
     }
@@ -243,7 +238,6 @@ app.put('/api/auth/set-password', authenticateToken, async (req, res) => {
   }
 });
 
-// ✅ UPDATED: Change Password (for users with existing passwords)
 app.put('/api/auth/change-password', authenticateToken, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
@@ -261,18 +255,15 @@ app.put('/api/auth/change-password', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Check if user has a password set
     if (!user.hasPassword || !user.password) {
       return res.status(400).json({ error: 'No password set. Use set password instead.' });
     }
 
-    // Verify current password
     const isValidPassword = await bcrypt.compare(currentPassword, user.password);
     if (!isValidPassword) {
       return res.status(401).json({ error: 'Current password is incorrect' });
     }
 
-    // Hash and save new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     user.password = hashedPassword;
     await user.save();
@@ -336,13 +327,12 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
     let user = await User.findOne({ email: payload.email });
     if (!user) {
-      // ✅ NEW: Create user with hasPassword = false for Google OAuth
       user = new User({
         name: payload.name,
         email: payload.email,
-        password: '', // No password for Google OAuth users initially
-        hasPassword: false, // ✅ Mark that user doesn't have a password yet
-        profilePhoto: payload.picture || '' // ✅ Store Google profile photo
+        password: '',
+        hasPassword: false,
+        profilePhoto: payload.picture || ''
       });
       await user.save();
     }
@@ -353,7 +343,6 @@ app.get('/api/auth/google/callback', async (req, res) => {
       { expiresIn: '7d' }
     );
 
-    // ✅ UPDATED: Include hasPassword and profilePhoto in user data
     const userData = {
       id: user._id,
       name: user.name,
@@ -427,7 +416,6 @@ app.post('/api/translate', authenticateToken, async (req, res) => {
   try {
     const { text, targetLanguage } = req.body;
 
-    // Validate input
     if (!text || !text.trim()) {
       return res.status(400).json({ error: 'Text is required for translation' });
     }
@@ -436,7 +424,6 @@ app.post('/api/translate', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Target language is required' });
     }
 
-    // Validate target language (Indian languages supported)
     const supportedLanguages = ['hi', 'mr', 'bn', 'gu', 'ta', 'te', 'kn', 'ml', 'pa', 'ur'];
     if (!supportedLanguages.includes(targetLanguage)) {
       return res.status(400).json({ 
@@ -445,27 +432,20 @@ app.post('/api/translate', authenticateToken, async (req, res) => {
       });
     }
 
-    // Get MyMemory API key from environment or use default
     const MYMEMORY_API_KEY = process.env.MYMEMORY_API_KEY || '2f1d0cbe7843b300e9ce';
-    
-    // Build API URL with your API key
     const apiUrl = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|${targetLanguage}&de=${MYMEMORY_API_KEY}`;
     
-    // Make request to MyMemory API
     const response = await axios.get(apiUrl);
     
-    // Check response status
     if (response.data.responseStatus === 200 && response.data.responseData) {
       const translatedText = response.data.responseData.translatedText;
-      
-      // Log successful translation
       console.log(`✅ Translation completed: en -> ${targetLanguage} (${text.length} chars)`);
       
       res.json({
         translatedText: translatedText,
         sourceLanguage: 'en',
         targetLanguage: targetLanguage,
-        matches: response.data.matches?.length || 0, // Translation quality indicator
+        matches: response.data.matches?.length || 0,
         originalText: text
       });
     } else if (response.data.responseStatus === 403) {
@@ -490,7 +470,6 @@ app.post('/api/translate', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Translation error:', error.response?.data || error.message);
     
-    // Handle specific error cases
     if (error.response?.status === 403) {
       res.status(403).json({ 
         error: 'Translation API quota exceeded',
@@ -576,39 +555,73 @@ app.delete('/api/history', authenticateToken, async (req, res) => {
   }
 });
 
-// ✅ UPDATED: Download route with proper date/time formatting
+// ✅ FIXED: Download route with DD/MM/YYYY date format and 12-hour AM/PM time format
 app.get('/api/history/download', authenticateToken, async (req, res) => {
   try {
     const format = req.query.format || 'pdf';
     const transcriptions = await Transcription.find({ userId: req.user.id }).sort({ createdAt: -1 });
 
     if (format === 'pdf') {
-      const doc = new PDFDocument();
+      const doc = new PDFDocument({ margin: 50 });
       res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', 'attachment; filename=transcriptions.pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename=EchoScribe_Transcriptions.pdf');
       doc.pipe(res);
 
-      doc.fontSize(20).text('EchoScribe Transcriptions', { align: 'center' });
-      doc.moveDown();
+      // Title
+      doc.fontSize(24).fillColor('#8B5CF6').text('EchoScribe Transcriptions', { align: 'center' });
+      doc.moveDown(2);
 
       transcriptions.forEach((item, index) => {
         const dateTime = formatDateTime(item.createdAt);
-        doc.fontSize(12).text(`${index + 1}. ${dateTime.date} at ${dateTime.time}`);
-        doc.fontSize(10).text(item.text);
-        doc.moveDown();
+        
+        // Transcription number
+        doc.fontSize(14).fillColor('#8B5CF6').text(`Transcription #${index + 1}`, { continued: false });
+        doc.moveDown(0.5);
+        
+        // Date and Time
+        doc.fontSize(10).fillColor('#6B7280').text(`Date: ${dateTime.date}  |  Time: ${dateTime.time}`, { continued: false });
+        doc.moveDown(0.5);
+        
+        // Separator line
+        doc.moveTo(50, doc.y).lineTo(550, doc.y).strokeColor('#E5E7EB').stroke();
+        doc.moveDown(0.5);
+        
+        // Transcription text
+        doc.fontSize(11).fillColor('#1F2937').text(item.text, {
+          align: 'left',
+          lineGap: 2
+        });
+        
+        doc.moveDown(2);
+        
+        // Add page break if needed (not on last item)
+        if (index < transcriptions.length - 1 && doc.y > 650) {
+          doc.addPage();
+        }
       });
 
       doc.end();
     } else if (format === 'txt') {
-      res.setHeader('Content-Type', 'text/plain');
-      res.setHeader('Content-Disposition', 'attachment; filename=transcriptions.txt');
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename=EchoScribe_Transcriptions.txt');
 
-      let content = 'EchoScribe Transcriptions\n\n';
+      let content = '═══════════════════════════════════════════════════════════\n';
+      content += '                  ECHOSCRIBE TRANSCRIPTIONS                  \n';
+      content += '═══════════════════════════════════════════════════════════\n\n';
+      
       transcriptions.forEach((item, index) => {
         const dateTime = formatDateTime(item.createdAt);
-        content += `${index + 1}. ${dateTime.date} at ${dateTime.time}\n`;
+        
+        content += `\n─────────────────────────────────────────────────────────────\n`;
+        content += `Transcription #${index + 1}\n`;
+        content += `Date: ${dateTime.date}  |  Time: ${dateTime.time}\n`;
+        content += `─────────────────────────────────────────────────────────────\n\n`;
         content += `${item.text}\n\n`;
       });
+
+      content += '\n═══════════════════════════════════════════════════════════\n';
+      content += '           Generated by EchoScribe • Voice to Text          \n';
+      content += '═══════════════════════════════════════════════════════════\n';
 
       res.send(content);
     } else {
