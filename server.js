@@ -52,6 +52,34 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-pro
 // Multer Configuration for Audio Upload
 const upload = multer({ storage: multer.memoryStorage() });
 
+// ✅ NEW: Helper function to format date and time properly
+const formatDateTime = (date) => {
+  const d = new Date(date);
+  
+  // Format date
+  const dateOptions = { 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric' 
+  };
+  const formattedDate = d.toLocaleDateString('en-US', dateOptions);
+  
+  // Format time with AM/PM
+  const timeOptions = { 
+    hour: '2-digit', 
+    minute: '2-digit', 
+    second: '2-digit',
+    hour12: true 
+  };
+  const formattedTime = d.toLocaleTimeString('en-US', timeOptions);
+  
+  return {
+    date: formattedDate,
+    time: formattedTime,
+    full: `${formattedDate} at ${formattedTime}`
+  };
+};
+
 // Authentication Middleware
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -548,6 +576,7 @@ app.delete('/api/history', authenticateToken, async (req, res) => {
   }
 });
 
+// ✅ UPDATED: Download route with proper date/time formatting
 app.get('/api/history/download', authenticateToken, async (req, res) => {
   try {
     const format = req.query.format || 'pdf';
@@ -563,7 +592,8 @@ app.get('/api/history/download', authenticateToken, async (req, res) => {
       doc.moveDown();
 
       transcriptions.forEach((item, index) => {
-        doc.fontSize(12).text(`${index + 1}. ${new Date(item.createdAt).toLocaleString()}`);
+        const dateTime = formatDateTime(item.createdAt);
+        doc.fontSize(12).text(`${index + 1}. ${dateTime.date} at ${dateTime.time}`);
         doc.fontSize(10).text(item.text);
         doc.moveDown();
       });
@@ -575,7 +605,8 @@ app.get('/api/history/download', authenticateToken, async (req, res) => {
 
       let content = 'EchoScribe Transcriptions\n\n';
       transcriptions.forEach((item, index) => {
-        content += `${index + 1}. ${new Date(item.createdAt).toLocaleString()}\n`;
+        const dateTime = formatDateTime(item.createdAt);
+        content += `${index + 1}. ${dateTime.date} at ${dateTime.time}\n`;
         content += `${item.text}\n\n`;
       });
 
