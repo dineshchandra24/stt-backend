@@ -102,6 +102,21 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+// Optional Authentication Middleware (allows both authenticated and non-authenticated requests)
+const optionalAuth = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (token) {
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+      if (!err) {
+        req.user = user;
+      }
+    });
+  }
+  next(); // Continue regardless of authentication
+};
+
 // ==================== AUTH ROUTES ====================
 
 // Sign Up
@@ -374,7 +389,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
 // ==================== TRANSCRIPTION ROUTES ====================
 
-app.post('/api/transcribe', authenticateToken, upload.single('audio'), async (req, res) => {
+app.post('/api/transcribe', optionalAuth, upload.single('audio'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No audio file provided' });
